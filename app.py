@@ -71,6 +71,57 @@ def admin(f):
   if session.get('role')!='admin': return 'Accès administrateur refusé',403
   return f(*a,**k)
  return w
+
+PHONE_COUNTRY_CODES=('229','228','225','226','227','221','223','234','233','237','241','243')
+
+def phone_digits(value):
+ return ''.join(ch for ch in str(value or '') if ch in '0123456789')
+
+def normalize_registration_phone(value,country_code):
+ raw=str(value or '').strip(); digits=phone_digits(raw)
+ if raw.startswith('00'):
+  digits=digits[2:]; international=True
+ elif raw.startswith('+'):
+  international=True
+ else:
+  international=False
+ if international:
+  full=digits
+  if not any(full.startswith(code) for code in PHONE_COUNTRY_CODES): raise ValueError('phone')
+ else:
+  selected=phone_digits(country_code)
+  if selected not in PHONE_COUNTRY_CODES: raise ValueError('phone')
+  embedded=next((code for code in sorted(PHONE_COUNTRY_CODES,key=len,reverse=True) if digits.startswith(code) and len(digits)>len(code)+5),None)
+  full=digits if embedded else selected+digits
+ if not 7<=len(full)<=15: raise ValueError('phone')
+ return '+'+full
+
+def phone_login_candidates(value):
+ raw=str(value or '').strip(); digits=phone_digits(raw); candidates=set()
+ if not digits: return []
+ def add_with_local_variants(code,local):
+  if local: candidates.add('+'+code+local)
+  if local.startswith('0') and len(local)>1: candidates.add('+'+code+local[1:])
+  elif local: candidates.add('+'+code+'0'+local)
+ if raw.startswith('00'):
+  international=digits[2:]
+ elif raw.startswith('+'):
+  international=digits
+ else:
+  international=None
+ if international is not None:
+  if international: candidates.add('+'+international)
+  code=next((code for code in sorted(PHONE_COUNTRY_CODES,key=len,reverse=True) if international.startswith(code) and len(international)>len(code)+5),None)
+  if code: add_with_local_variants(code,international[len(code):])
+ else:
+  # A country code may be included in the field, or chosen separately at signup.
+  code=next((code for code in sorted(PHONE_COUNTRY_CODES,key=len,reverse=True) if digits.startswith(code) and len(digits)>len(code)+5),None)
+  if code:
+   candidates.add('+'+digits)
+   add_with_local_variants(code,digits[len(code):])
+  else:
+   for code in PHONE_COUNTRY_CODES: add_with_local_variants(code,digits)
+ return sorted(candidates)
 @app.route('/')
 def home():
  q=request.args.get('q','').strip(); c=conn(); cur=c.cursor(); cur.execute("select * from partner_ads where active=true and (starts_at is null or starts_at<=now()) and (ends_at is null or ends_at>=now()) order by id desc"); ads=[dict(a) for a in cur.fetchall()]
@@ -89,19 +140,28 @@ def register():
    contact=request.form['contact'].strip(); kind=request.form.get('contact_type','email');
    if request.form['password'] != request.form['password_confirm']: raise ValueError('password')
    if kind=='phone':
-    digits=''.join(ch for ch in contact if ch.isdigit()); phone='+'+request.form.get('country_code','229')+digits; email=None
+    phone=normalize_registration_phone(contact,request.form.get('country_code','229')); email=None
    else: email=contact.lower(); phone=None
-   c=conn();cur=c.cursor();cur.execute('insert into users(name,email,phone,password_hash) values(%s,%s,%s,%s) returning id',(request.form['name'],email,phone,generate_password_hash(request.form['password']))); uid=cur.fetchone()['id'];c.commit();c.close();session.update(uid=uid,name=request.form['name'],role='member');return redirect('/dashboard')
-  except ValueError: flash('Les deux mots de passe ne correspondent pas.')
+   c=conn();cur=c.cursor();cur.execute('insert into users(name,email,phone,password_hash) values(%s,%s,%s,%s) returning id',(request.form['name'],email,phone,generate_password_hash(request.form['password']))); uid=cur.fetchone()['id'];c.commit();c.close();session.update(uid=uid,name=request.form['name'],role='member');session['welcome_after_registration']=True;return redirect('/dashboard')
+  except ValueError as exc:
+   if str(exc)=='phone': flash('Vérifie le numéro et son indicatif, puis réessaie.')
+   else: flash('Les deux mots de passe ne correspondent pas.')
   except Exception: flash('Cet e-mail ou ce numéro est déjà utilisé, ou les données sont invalides.')
- return page('''<div class=panel><h1>Créer un compte</h1><p class=muted>Choisis ton mode d’inscription.</p><form method=post><input name=name placeholder="Nom complet" required><select name=contact_type onchange="document.getElementById('phonebox').style.display=this.value==='phone'?'flex':'none';document.getElementById('contact').type=this.value==='phone'?'tel':'email';document.getElementById('contact').placeholder=this.value==='phone'?'Numéro de téléphone':'Adresse e-mail'" required><option value=email>E-mail</option><option value=phone>Numéro de téléphone</option></select><div id=phonebox style="display:none;gap:6px"><select name=country_code><option value=229 selected>🇧🇯 +229 Bénin</option><option value=228>🇹🇬 +228 Togo</option><option value=225>🇨🇮 +225 Côte d’Ivoire</option><option value=226>🇧🇫 +226 Burkina Faso</option><option value=227>🇳🇪 +227 Niger</option><option value=221>🇸🇳 +221 Sénégal</option><option value=223>🇲🇱 +223 Mali</option><option value=234>🇳🇬 +234 Nigeria</option><option value=233>🇬🇭 +233 Ghana</option><option value=237>🇨🇲 +237 Cameroun</option><option value=241>🇬🇦 +241 Gabon</option><option value=243>🇨🇩 +243 RDC</option></select></div><input id=contact name=contact type=email placeholder="Adresse e-mail" required><input name=password type=password minlength=6 placeholder="Mot de passe" required><input name=password_confirm type=password minlength=6 placeholder="Confirmer le mot de passe" required><button>Créer mon compte</button></form></div>''')
+ return page('''<div class=panel><h1>Créer un compte</h1><p class=muted>Choisis ton mode d’inscription.</p><form method=post><input name=name placeholder="Nom complet" required><select name=contact_type onchange="document.getElementById('phonebox').style.display=this.value==='phone'?'flex':'none';document.getElementById('phonehint').style.display=this.value==='phone'?'block':'none';document.getElementById('contact').type=this.value==='phone'?'tel':'email';document.getElementById('contact').placeholder=this.value==='phone'?'Numéro de téléphone':'Adresse e-mail'" required><option value=email>E-mail</option><option value=phone>Numéro de téléphone</option></select><div id=phonebox style="display:none;gap:6px"><select name=country_code><option value=229 selected>🇧🇯 +229 Bénin</option><option value=228>🇹🇬 +228 Togo</option><option value=225>🇨🇮 +225 Côte d’Ivoire</option><option value=226>🇧🇫 +226 Burkina Faso</option><option value=227>🇳🇪 +227 Niger</option><option value=221>🇸🇳 +221 Sénégal</option><option value=223>🇲🇱 +223 Mali</option><option value=234>🇳🇬 +234 Nigeria</option><option value=233>🇬🇭 +233 Ghana</option><option value=237>🇨🇲 +237 Cameroun</option><option value=241>🇬🇦 +241 Gabon</option><option value=243>🇨🇩 +243 RDC</option></select></div><p id=phonehint class=muted style="display:none">Tu peux choisir l’indicatif ci-dessus ou le saisir avec ton numéro ; les espaces ne gênent pas.</p><input id=contact name=contact type=email placeholder="Adresse e-mail" required><input name=password type=password minlength=6 placeholder="Mot de passe" required><input name=password_confirm type=password minlength=6 placeholder="Confirmer le mot de passe" required><button>Créer mon compte</button></form></div>''')
 @app.route('/login',methods=['GET','POST'])
 def login():
  if request.method=='POST':
-  contact=request.form['contact'].strip(); c=conn();cur=c.cursor();cur.execute('select * from users where email=%s or phone=%s',(contact.lower(),contact));u=cur.fetchone();c.close()
+  contact=request.form['contact'].strip(); c=conn();cur=c.cursor()
+  if '@' in contact:
+   cur.execute('select * from users where email=%s',(contact.lower(),)); matches=cur.fetchall()
+  else:
+   candidates=phone_login_candidates(contact)
+   cur.execute('select * from users where phone = any(%s)',(candidates,)) if candidates else None
+   matches=cur.fetchall() if candidates else []
+  c.close(); unique={row['id']:row for row in matches}; u=next(iter(unique.values())) if len(unique)==1 else None
   if u and check_password_hash(u['password_hash'],request.form['password']): session.update(uid=u['id'],name=u['name'],role=u['role']);return redirect('/admin' if u['role']=='admin' else '/dashboard')
   flash('Identifiants incorrects.')
- return page('''<div class=panel><h1>Connexion</h1><form method=post><input name=contact placeholder="E-mail ou numéro de téléphone" required><input name=password type=password placeholder="Mot de passe" required><button>Se connecter</button></form><p><a href="/forgot-password">Mot de passe oublié ?</a></p></div>''')
+ return page('''<div class=panel><h1>Connexion</h1><form method=post><input name=contact placeholder="E-mail ou numéro de téléphone" required><p class=muted>Pour un numéro, l’indicatif et les espaces sont reconnus automatiquement.</p><input name=password type=password placeholder="Mot de passe" required><button>Se connecter</button></form><p><a href="/forgot-password">Mot de passe oublié ?</a></p></div>''')
 @app.route('/forgot-password',methods=['GET','POST'])
 def forgot_password():
  if request.method=='POST': flash('La demande sera traitée par e-mail dès que la confirmation e-mail sera activée.')
@@ -111,7 +171,7 @@ def logout(): session.clear();return redirect('/')
 @app.route('/dashboard')
 @auth
 def dashboard():
- c=conn();cur=c.cursor();cur.execute('select * from listings where user_id=%s order by id desc',(session['uid'],));items=cur.fetchall();cur.execute('select i.*,l.title,l.id as listing_id from inquiries i join listings l on l.id=i.listing_id where l.user_id=%s order by i.id desc',(session['uid'],));messages=cur.fetchall();c.close();return page('''<div class=panel><h1>Bonjour {{session.name}}</h1><a class=btn href=/publish>Nouvelle annonce</a><h2>Mes annonces</h2>{% for x in items %}<div class=card><b>{{x.title}}</b><p>Statut : {{x.status}}</p><form method=post action="/delete-listing/{{x.id}}"><button type=submit>Supprimer</button></form></div>{% else %}<p>Aucune annonce.</p>{% endfor %}<h2>Messages reçus</h2>{% for m in messages %}<div class=card><b><a href="/listing/{{m.listing_id}}">{{m.title}}</a></b><p><strong>{{m.sender_name}}</strong> · {{m.sender_contact}}</p><p>{{m.message}}</p>{% if m.advertiser_reply %}<div class=alert><strong>Vos réponses :</strong><br>{{m.advertiser_reply}}</div>{% endif %}<form method=post action="/reply-inquiry/{{m.id}}"><textarea name=reply placeholder="Écrire une réponse ou recontacter ce client" required></textarea><button>Répondre</button></form></div>{% else %}<p>Aucun message reçu.</p>{% endfor %}</div>''',items=items,messages=messages)
+ c=conn();cur=c.cursor();cur.execute('select * from listings where user_id=%s order by id desc',(session['uid'],));items=cur.fetchall();cur.execute('select i.*,l.title,l.id as listing_id from inquiries i join listings l on l.id=i.listing_id where l.user_id=%s order by i.id desc',(session['uid'],));messages=cur.fetchall();c.close();welcome=session.pop('welcome_after_registration',False);return page('''<div class=panel>{% if welcome %}<div class=card role=status><h2>🌍 Bienvenue sur PubAfrica !</h2><p>Merci de nous avoir rejoints. Explore la plateforme, fais connaître tes produits et tes activités, et donne plus de visibilité à tes ambitions.</p><p>Nous te souhaitons une belle expérience, pleine d’opportunités et de réussite !</p><strong>PubAfrica — La visibilité qui fait grandir ton image ! 🚀</strong></div>{% endif %}<h1>Bonjour {{session.name}}</h1><a class=btn href=/publish>Nouvelle annonce</a><h2>Mes annonces</h2>{% for x in items %}<div class=card><b>{{x.title}}</b><p>Statut : {{x.status}}</p><form method=post action="/delete-listing/{{x.id}}"><button type=submit>Supprimer</button></form></div>{% else %}<p>Aucune annonce.</p>{% endfor %}<h2>Messages reçus</h2>{% for m in messages %}<div class=card><b><a href="/listing/{{m.listing_id}}">{{m.title}}</a></b><p><strong>{{m.sender_name}}</strong> · {{m.sender_contact}}</p><p>{{m.message}}</p>{% if m.advertiser_reply %}<div class=alert><strong>Vos réponses :</strong><br>{{m.advertiser_reply}}</div>{% endif %}<form method=post action="/reply-inquiry/{{m.id}}"><textarea name=reply placeholder="Écrire une réponse ou recontacter ce client" required></textarea><button>Répondre</button></form></div>{% else %}<p>Aucun message reçu.</p>{% endfor %}</div>''',items=items,messages=messages,welcome=welcome)
 @app.route('/reply-inquiry/<int:i>',methods=['POST'])
 @auth
 def reply_inquiry(i):

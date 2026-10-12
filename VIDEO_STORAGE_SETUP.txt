@@ -1,0 +1,21 @@
+PubAfrica — vidéo courte dans les annonces
+
+Fichiers
+- Remplacer le fichier app.py existant par le nouvel app.py fourni.
+- Ne pas ajouter le code sous un autre nom : le Dockerfile lance app.py.
+
+Préparation du stockage vidéo
+1. Dans le projet Supabase de PubAfrica, ouvrir Storage et créer un bucket nommé : pubafrica-media
+2. Rendre ce bucket public afin que les vidéos des annonces puissent être lues par les visiteurs.
+3. Dans les variables d’environnement Render, vérifier que SUPABASE_URL et SUPABASE_SERVICE_KEY sont déjà configurées. Garder la clé service-role secrète et ne pas la mettre dans GitHub.
+4. Si le bucket porte un autre nom, définir SUPABASE_MEDIA_BUCKET avec ce nom dans Render. Sinon le nom par défaut est pubafrica-media.
+5. Redéployer l’application.
+
+Comportement ajouté
+- Le formulaire propose un choix séparé : Photos ou Vidéo courte.
+- Les photos gardent leur limite actuelle de 2 Mo chacune.
+- Une vidéo MP4 ou WebM de 10 Mo maximum est acceptée, à la place des photos.
+- La vidéo est stockée dans Supabase Storage; la base de données conserve son lien et son type.
+- Une migration ajoute automatiquement le type de média à la table existante; les anciennes photos restent compatibles.
+- La page d’annonce montre un lecteur vidéo; la page d’exploration affiche un aperçu.
+- Aucune vidéo n’est envoyée par SMS ou e-mail.
